@@ -12,8 +12,28 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
+#define SYMBOL_BUFFER_SIZE	32
+
 volatile uint8_t buffer_a[2048];
-volatile uint8_t buffer_b[2048];
+volatile uint8_t buffer_b[2048]; 
+
+volatile uint8_t LUTOffset = 0; 
+volatile uint8_t lutCount = 0;
+
+const uint16_t sineLUT[SYMBOL_BUFFER_SIZE * 2 * 2] =
+{
+	// 100%
+	0x800,0x98f,0xb0f,0xc71,0xda7,0xea6,0xf63,0xfd8,
+	0xfff,0xfd8,0xf63,0xea6,0xda7,0xc71,0xb0f,0x98f,
+	0x800,0x670,0x4f0,0x38e,0x258,0x159,0x9c,0x27,
+	0x0,0x27,0x9c,0x159,0x258,0x38e,0x4f0,0x670,
+	0x800,0x98f,0xb0f,0xc71,0xda7,0xea6,0xf63,0xfd8,
+	0xfff,0xfd8,0xf63,0xea6,0xda7,0xc71,0xb0f,0x98f,
+	0x800,0x670,0x4f0,0x38e,0x258,0x159,0x9c,0x27,
+	0x0,0x27,0x9c,0x159,0x258,0x38e,0x4f0,0x670,	
+};
+
+
 
 //Initialisiert den ADC im Freerunning Mode
 void sys_InitADC(void)
@@ -43,15 +63,26 @@ void sys_InitADC(void)
 	ADCB.CTRLA|=ADC_ENABLE_bm;
 }
 
+void vInitDAC()
+{
+	DACB.CTRLA = DAC_CH0EN_bm;	// Enable CH0
+	DACB.CTRLB = DAC_CH0TRIG_bm;	// AutoTrigger CH0
+	DACB.CTRLC = 0x00;	// AVcc as Refernece Voltage
+	DACB.EVCTRL = 0x00;	// Event Channel 1
+	DACB.CTRLA |= DAC_ENABLE_bm;
+	PORTB.DIRSET = 0x04;
+}
+
+
 void vInitDMA()
 {
-	uint8_t i = 0;
 	
 	//ADC8 PB0 Input
 	PORTB.DIRCLR = PIN0_bm;
 	PORTB.DIRCLR = PIN1_bm;
 	
-	sys_InitADC();
+	//sys_InitADC();
+	vInitDAC();
 
 	// set TCC1 to 11024Hz overflow, actually 11019.2838Hz (-0.052% error)
 	TCC1.CTRLA = 0; // stop if running
@@ -59,7 +90,8 @@ void vInitDMA()
 	TCC1.PER = 0x0FFF;
 
 	EVSYS.CH0MUX = EVSYS_CHMUX_TCC1_OVF_gc; // trigger on timer overflow
-
+	
+	
 
 	// reset DMA controller
 	DMA.CTRL = 0;
@@ -76,34 +108,37 @@ void vInitDMA()
 	DMA.CH0.REPCNT		= 0;
 	DMA.CH0.CTRLA		= DMA_CH_BURSTLEN_2BYTE_gc | DMA_CH_SINGLE_bm | DMA_CH_REPEAT_bm; // ADC result is 2 byte 12 bit word
 	DMA.CH0.CTRLB		= 0x1;
-	DMA.CH0.ADDRCTRL	= DMA_CH_SRCRELOAD_BURST_gc | DMA_CH_SRCDIR_INC_gc | // reload source after every burst
-	DMA_CH_DESTRELOAD_TRANSACTION_gc | DMA_CH_DESTDIR_INC_gc; // reload dest after every transaction
-	DMA.CH0.TRIGSRC		= DMA_CH_TRIGSRC_TCC1_OVF_gc;
-	DMA.CH0.TRFCNT		= 2048; // always the number of bytes, even if burst length > 1
-	DMA.CH0.DESTADDR0	= (( (uint16_t) buffer_a) >> 0) & 0xFF;
-	DMA.CH0.DESTADDR1	= (( (uint16_t) buffer_a) >> 8) & 0xFF;
+	DMA.CH0.ADDRCTRL	= DMA_CH_SRCRELOAD_TRANSACTION_gc | DMA_CH_SRCDIR_INC_gc | // reload source after every burst
+	DMA_CH_DESTRELOAD_BURST_gc | DMA_CH_DESTDIR_INC_gc; // reload dest after every transaction
+	DMA.CH0.TRIGSRC		= DMA_CH_TRIGSRC_DACB_CH0_gc;
+	DMA.CH0.TRFCNT		= SYMBOL_BUFFER_SIZE * 2; // always the number of bytes, even if burst length > 1
+	DMA.CH0.DESTADDR0	= ((uint16_t)(&DACB.CH0DATA)>>0) & 0xFF;
+	DMA.CH0.DESTADDR1	= ((uint16_t)(&DACB.CH0DATA)>>8) & 0xFF;
 	DMA.CH0.DESTADDR2	= 0;
-	DMA.CH0.SRCADDR0	= (( (uint16_t) &ADCB.CH1.RES) >> 0) & 0xFF;
-	DMA.CH0.SRCADDR1	= (( (uint16_t) &ADCB.CH1.RES) >> 8) & 0xFF;
+	DMA.CH0.SRCADDR0	= ( (uint16_t) (&sineLUT[0]) >> 0) & 0xFF;
+	DMA.CH0.SRCADDR1	= ( (uint16_t) (&sineLUT[0]) >> 8) & 0xFF;
 	DMA.CH0.SRCADDR2	= 0;
 
 	// channel 1
 	DMA.CH1.REPCNT		= 0;
 	DMA.CH1.CTRLA		= DMA_CH_BURSTLEN_2BYTE_gc | DMA_CH_SINGLE_bm | DMA_CH_REPEAT_bm; // ADC result is 2 byte 12 bit word
 	DMA.CH1.CTRLB		= 0x1;
-	DMA.CH1.ADDRCTRL	= DMA_CH_SRCRELOAD_BURST_gc | DMA_CH_SRCDIR_INC_gc | // reload source after every burst
-	DMA_CH_DESTRELOAD_TRANSACTION_gc | DMA_CH_DESTDIR_INC_gc; // reload dest after every transaction
-	DMA.CH1.TRIGSRC		= DMA_CH_TRIGSRC_TCC1_OVF_gc;
-	DMA.CH1.TRFCNT		= 2048;
-	DMA.CH1.DESTADDR0	= (( (uint16_t) buffer_b) >> 0) & 0xFF;
-	DMA.CH1.DESTADDR1	= (( (uint16_t) buffer_b) >> 8) & 0xFF;
+	DMA.CH1.ADDRCTRL	= DMA_CH_SRCRELOAD_TRANSACTION_gc  | DMA_CH_SRCDIR_INC_gc | // reload source after every burst
+	DMA_CH_DESTRELOAD_BURST_gc  | DMA_CH_DESTDIR_INC_gc; // reload dest after every transaction
+	DMA.CH1.TRIGSRC		= DMA_CH_TRIGSRC_DACB_CH0_gc;
+	DMA.CH1.TRFCNT		= SYMBOL_BUFFER_SIZE * 2;
+	DMA.CH1.DESTADDR0	= ((uint16_t)(&DACB.CH0DATA)>>0) & 0xFF;
+	DMA.CH1.DESTADDR1	= ((uint16_t)(&DACB.CH0DATA)>>8) & 0xFF;
 	DMA.CH1.DESTADDR2	= 0;
-	DMA.CH1.SRCADDR0	= (( (uint16_t) &ADCB.CH1.RES) >> 0) & 0xFF;
-	DMA.CH1.SRCADDR1	= (( (uint16_t) &ADCB.CH1.RES) >> 8) & 0xFF;
+	DMA.CH1.SRCADDR0	= ( (uint16_t) (&sineLUT[0]) >> 0) & 0xFF;
+	DMA.CH1.SRCADDR1	= ( (uint16_t) (&sineLUT[0]) >> 8) & 0xFF;
 	DMA.CH1.SRCADDR2	= 0;
 
 	DMA.CH0.CTRLA		|= DMA_CH_ENABLE_bm;
+	//DMA.CH1.CTRLA		|= DMA_CH_ENABLE_bm;
+	
 	TCC1.CTRLA			= TC_CLKSEL_DIV1024_gc; // start timer, and in turn ADC
+	//TCC1.INTCTRLA=TC_OVFINTLVL_MED_gc;
 
 		//Example for polling
 // 		while (!(DMA.INTFLAGS & DMA_CH0TRNIF_bm));
@@ -111,8 +146,21 @@ void vInitDMA()
 
 }
 
+ISR(TCC1_OVF_vect)
+{
+	TCC1.INTFLAGS |= 0x01;
+	
+	DACB.CH0DATA = sineLUT[lutCount];
+	lutCount ++;
+	if (lutCount == SYMBOL_BUFFER_SIZE)
+	{
+		lutCount = 0;
+	}	
+}
+
 ISR(DMA_CH0_vect)
 {
+	
 	
 	//Interrupt quittieren
 	DMA.CH0.CTRLB |= 0x10;
