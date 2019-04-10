@@ -14,6 +14,17 @@
 
 EventGroupHandle_t xDMAProcessEventGroup;
 
+void qamSendByte(uint8_t byte)
+{
+	uint8_t qamLUT[4] = {0,8,16,24};
+	uint8_t i = 0;
+	
+	for (i=0; i!=4; i ++)
+	{
+		qamSymbols[i] = qamLUT[(byte >> (2 * i))  & 0x03];
+	}
+	qamSymbolCount = 3;	
+}
 
 void vTask_DMAHandler(void *pvParameters) 
 {
@@ -43,6 +54,8 @@ void vTask_DMAHandler(void *pvParameters)
 			//Debug Output
 			PORTF.OUT = (PORTF.OUT & (0xFF - 0x02));
 			PORTF.OUT |= 0x04;
+			
+			qamSendByte(0x00);
 		}
 		else //When it was not DMA_EVT_GRP_BufferA, then it was probably B. Since we only use two bits!
 		{
@@ -50,6 +63,7 @@ void vTask_DMAHandler(void *pvParameters)
 			//buffer_b ....
 			
 			//Debug Output
+			
 			PORTF.OUT = (PORTF.OUT & (0xFF - 0x04));
 			PORTF.OUT |= 0x02;
 		}

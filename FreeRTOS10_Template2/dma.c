@@ -18,21 +18,27 @@ volatile uint8_t buffer_a[2048];
 volatile uint8_t buffer_b[2048]; 
 
 volatile uint8_t LUTOffset = 0; 
+uint8_t nextLUTOffset = 0;
 volatile uint8_t lutCount = 0;
+volatile uint8_t qamSymbolCount = 0;
+volatile uint8_t qamBlockTransfer = 0;
 
-const uint16_t sineLUT[SYMBOL_BUFFER_SIZE * 2 * 2] =
+//Two Sinusodial Periods are saved here to easily move around with the offset!
+
+const uint16_t sineLUT[SYMBOL_BUFFER_SIZE * 2] =
 {
 	// 100%
-	0x800,0x98f,0xb0f,0xc71,0xda7,0xea6,0xf63,0xfd8,
-	0xfff,0xfd8,0xf63,0xea6,0xda7,0xc71,0xb0f,0x98f,
-	0x800,0x670,0x4f0,0x38e,0x258,0x159,0x9c,0x27,
-	0x0,0x27,0x9c,0x159,0x258,0x38e,0x4f0,0x670,
-	0x800,0x98f,0xb0f,0xc71,0xda7,0xea6,0xf63,0xfd8,
-	0xfff,0xfd8,0xf63,0xea6,0xda7,0xc71,0xb0f,0x98f,
-	0x800,0x670,0x4f0,0x38e,0x258,0x159,0x9c,0x27,
-	0x0,0x27,0x9c,0x159,0x258,0x38e,0x4f0,0x670,	
+	0x7f,0xb0,0xd9,0xf4,0xfe,0xf4,0xd9,0xb0,
+	0x7f,0x4e,0x25,0xa,0x0,0xa,0x25,0x4e,
+	0x7f,0xb0,0xd9,0xf4,0xfe,0xf4,0xd9,0xb0,
+	0x7f,0x4e,0x25,0xa,0x0,0xa,0x25,0x4e,
+	0x7f,0xb0,0xd9,0xf4,0xfe,0xf4,0xd9,0xb0,
+	0x7f,0x4e,0x25,0xa,0x0,0xa,0x25,0x4e,
+	0x7f,0xb0,0xd9,0xf4,0xfe,0xf4,0xd9,0xb0,
+	0x7f,0x4e,0x25,0xa,0x0,0xa,0x25,0x4e
 };
 
+uint8_t qamSymbols[8] = {0,0,0,0,0,0,0};
 
 
 //Initialisiert den ADC im Freerunning Mode
@@ -67,12 +73,39 @@ void vInitDAC()
 {
 	DACB.CTRLA = DAC_CH0EN_bm;	// Enable CH0
 	DACB.CTRLB = DAC_CH0TRIG_bm;	// AutoTrigger CH0
-	DACB.CTRLC = 0x00;	// AVcc as Refernece Voltage
-	DACB.EVCTRL = 0x00;	// Event Channel 1
+	DACB.CTRLC = DAC_REFSEL_AVCC_gc | DAC_LEFTADJ_bm; //0x0;	// AVcc as Refernece Voltage
+	DACB.EVCTRL = DAC_EVSEL_0_gc;	// Event Channel 1
 	DACB.CTRLA |= DAC_ENABLE_bm;
 	PORTB.DIRSET = 0x04;
 }
 
+
+void vSetDMA_LUT_Offset()
+{
+	
+	if(qamSymbolCount != 0)
+	{
+		qamBlockTransfer = 1;
+		nextLUTOffset = qamSymbols[qamSymbolCount];
+		qamSymbolCount --;		
+	}
+	else if (qamBlockTransfer == 1)
+	{  //Abfangen des letzten Symbols
+		nextLUTOffset = qamSymbols[qamSymbolCount];
+		qamBlockTransfer = 0;
+	}
+	
+	if(nextLUTOffset != LUTOffset)
+	{	
+		LUTOffset = nextLUTOffset;
+		
+		DMA.CH1.SRCADDR0	= ( (uint16_t) (&sineLUT[0 + LUTOffset]) >> 0) & 0xFF;
+		DMA.CH1.SRCADDR1	= ( (uint16_t) (&sineLUT[0 + LUTOffset]) >> 8) & 0xFF;
+		
+		DMA.CH0.SRCADDR0	= ( (uint16_t) (&sineLUT[0 + LUTOffset]) >> 0) & 0xFF;
+		DMA.CH0.SRCADDR1	= ( (uint16_t) (&sineLUT[0 + LUTOffset]) >> 8) & 0xFF;
+	}
+}
 
 void vInitDMA()
 {
@@ -86,19 +119,19 @@ void vInitDMA()
 
 	// set TCC1 to 11024Hz overflow, actually 11019.2838Hz (-0.052% error)
 	TCC1.CTRLA = 0; // stop if running
+	TCC1.CTRLB = TC_WGMODE_NORMAL_gc;
+	TCC1.CTRLD = TC_EVACT_RESTART_gc;
 	TCC1.CNT = 0;
-	TCC1.PER = 0x0FFF;
+	TCC1.PER = 0x00FF; //DMA Trigger Speed. SINE WAVE f = 1/(((fCPU/TCC1_DIV) / TCC1.PER) / SYMBOL_BUFFER_SIZE)
 
-	EVSYS.CH0MUX = EVSYS_CHMUX_TCC1_OVF_gc; // trigger on timer overflow
-	
-	
+	EVSYS.CH0MUX = EVSYS_CHMUX_TCC1_OVF_gc; // trigger on timer overflow	
 
 	// reset DMA controller
 	DMA.CTRL = 0;
 	DMA.CTRL = DMA_RESET_bm;
 	while ((DMA.CTRL & DMA_RESET_bm) != 0);
 	
-	DMA.CTRL			= DMA_CH_ENABLE_bm | DMA_DBUFMODE_CH01_gc; // double buffered with channels 0 and 1
+	DMA.CTRL = DMA_CH_ENABLE_bm | DMA_DBUFMODE_CH01_gc; // double buffered with channels 0 and 1
 	
 	//Bei Double Buffering wird automatisch aus Channel 0 und 1 ein "Pair" gebildet. 
 	//Siehe dazu AVR1304.P8
@@ -108,115 +141,101 @@ void vInitDMA()
 	DMA.CH0.REPCNT		= 0;
 	DMA.CH0.CTRLA		= DMA_CH_BURSTLEN_2BYTE_gc | DMA_CH_SINGLE_bm | DMA_CH_REPEAT_bm; // ADC result is 2 byte 12 bit word
 	DMA.CH0.CTRLB		= 0x1;
-	DMA.CH0.ADDRCTRL	= DMA_CH_SRCRELOAD_TRANSACTION_gc | DMA_CH_SRCDIR_INC_gc | // reload source after every burst
-	DMA_CH_DESTRELOAD_BURST_gc | DMA_CH_DESTDIR_INC_gc; // reload dest after every transaction
-	DMA.CH0.TRIGSRC		= DMA_CH_TRIGSRC_DACB_CH0_gc;
-	DMA.CH0.TRFCNT		= SYMBOL_BUFFER_SIZE * 2; // always the number of bytes, even if burst length > 1
-	DMA.CH0.DESTADDR0	= ((uint16_t)(&DACB.CH0DATA)>>0) & 0xFF;
-	DMA.CH0.DESTADDR1	= ((uint16_t)(&DACB.CH0DATA)>>8) & 0xFF;
+	DMA.CH0.ADDRCTRL	= DMA_CH_SRCDIR_INC_gc /*increment*/ | DMA_CH_DESTDIR_FIXED_gc |  DMA_CH_SRCRELOAD_TRANSACTION_gc; // reload dest after every transaction
+	DMA.CH0.TRIGSRC		= DMA_CH_TRIGSRC_EVSYS_CH0_gc;
+	DMA.CH0.TRFCNT		= SYMBOL_BUFFER_SIZE; // always the number of bytes, even if burst length > 1
+	DMA.CH0.DESTADDR0	= ((uint16_t)(&DACB.CH0DATAH)>>0) & 0xFF;
+	DMA.CH0.DESTADDR1	= ((uint16_t)(&DACB.CH0DATAH)>>8) & 0xFF;
 	DMA.CH0.DESTADDR2	= 0;
-	DMA.CH0.SRCADDR0	= ( (uint16_t) (&sineLUT[0]) >> 0) & 0xFF;
-	DMA.CH0.SRCADDR1	= ( (uint16_t) (&sineLUT[0]) >> 8) & 0xFF;
+	DMA.CH0.SRCADDR0	= ( (uint16_t) (&sineLUT[0 + LUTOffset]) >> 0) & 0xFF;
+	DMA.CH0.SRCADDR1	= ( (uint16_t) (&sineLUT[0 + LUTOffset]) >> 8) & 0xFF;
 	DMA.CH0.SRCADDR2	= 0;
 
 	// channel 1
 	DMA.CH1.REPCNT		= 0;
 	DMA.CH1.CTRLA		= DMA_CH_BURSTLEN_2BYTE_gc | DMA_CH_SINGLE_bm | DMA_CH_REPEAT_bm; // ADC result is 2 byte 12 bit word
 	DMA.CH1.CTRLB		= 0x1;
-	DMA.CH1.ADDRCTRL	= DMA_CH_SRCRELOAD_TRANSACTION_gc  | DMA_CH_SRCDIR_INC_gc | // reload source after every burst
-	DMA_CH_DESTRELOAD_BURST_gc  | DMA_CH_DESTDIR_INC_gc; // reload dest after every transaction
-	DMA.CH1.TRIGSRC		= DMA_CH_TRIGSRC_DACB_CH0_gc;
-	DMA.CH1.TRFCNT		= SYMBOL_BUFFER_SIZE * 2;
-	DMA.CH1.DESTADDR0	= ((uint16_t)(&DACB.CH0DATA)>>0) & 0xFF;
-	DMA.CH1.DESTADDR1	= ((uint16_t)(&DACB.CH0DATA)>>8) & 0xFF;
+	DMA.CH1.ADDRCTRL	= DMA_CH_SRCDIR_INC_gc /*increment*/ | DMA_CH_DESTDIR_FIXED_gc |  DMA_CH_SRCRELOAD_TRANSACTION_gc;
+	DMA.CH1.TRIGSRC		= DMA_CH_TRIGSRC_EVSYS_CH0_gc;
+	DMA.CH1.TRFCNT		= SYMBOL_BUFFER_SIZE;
+	DMA.CH1.DESTADDR0	= ((uint16_t)(&DACB.CH0DATAH)>>0) & 0xFF;
+	DMA.CH1.DESTADDR1	= ((uint16_t)(&DACB.CH0DATAH)>>8) & 0xFF;
 	DMA.CH1.DESTADDR2	= 0;
-	DMA.CH1.SRCADDR0	= ( (uint16_t) (&sineLUT[0]) >> 0) & 0xFF;
-	DMA.CH1.SRCADDR1	= ( (uint16_t) (&sineLUT[0]) >> 8) & 0xFF;
+	DMA.CH1.SRCADDR0	= ( (uint16_t) (&sineLUT[0 + LUTOffset]) >> 0) & 0xFF;
+	DMA.CH1.SRCADDR1	= ( (uint16_t) (&sineLUT[0 + LUTOffset]) >> 8) & 0xFF;
 	DMA.CH1.SRCADDR2	= 0;
 
 	DMA.CH0.CTRLA		|= DMA_CH_ENABLE_bm;
-	//DMA.CH1.CTRLA		|= DMA_CH_ENABLE_bm;
 	
 	TCC1.CTRLA			= TC_CLKSEL_DIV1024_gc; // start timer, and in turn ADC
-	//TCC1.INTCTRLA=TC_OVFINTLVL_MED_gc;
-
-		//Example for polling
-// 		while (!(DMA.INTFLAGS & DMA_CH0TRNIF_bm));
-// 		DMA.INTFLAGS = DMA_CH0TRNIF_bm;
-
-}
-
-ISR(TCC1_OVF_vect)
-{
-	TCC1.INTFLAGS |= 0x01;
-	
-	DACB.CH0DATA = sineLUT[lutCount];
-	lutCount ++;
-	if (lutCount == SYMBOL_BUFFER_SIZE)
-	{
-		lutCount = 0;
-	}	
 }
 
 ISR(DMA_CH0_vect)
-{
-	
-	
+{	
 	//Interrupt quittieren
 	DMA.CH0.CTRLB |= 0x10;
-	TCC1.INTFLAGS |= 0x01;
-	//PORTF.OUTTGL = 0x01;
-
 	
+	//Erst nach einem weiteren Timer Tick wird der DMA weitergeführt.
+	//Wir haben also Zeit, hier den DMA umzukonfigurieren.
+	vSetDMA_LUT_Offset();
 	
-		
-	BaseType_t xHigherPriorityTaskWoken, xResult;
-
-	/* xHigherPriorityTaskWoken must be initialised to pdFALSE. */
-	xHigherPriorityTaskWoken = pdFALSE;
-
-	/* Set bit 0 and bit 4 in xEventGroup. */
-	xResult = xEventGroupSetBitsFromISR(
-								xDMAProcessEventGroup,   /* The event group being updated. */
-								DMA_EVT_GRP_BufferA, /* The bits being set. */
-								&xHigherPriorityTaskWoken );
-
-	/* Was the message posted successfully? */
-	if( xResult != pdFAIL )
+	//Wenn wir nicht am Ararbeiten von Symbolen sind! Dann gehen wir in den Task
+	if(qamBlockTransfer == 0)
 	{
-		/* If xHigherPriorityTaskWoken is now set to pdTRUE then a context
-		switch should be requested.  The macro used is port specific and will
-		be either portYIELD_FROM_ISR() or portEND_SWITCHING_ISR() - refer to
-		the documentation page for the port being used. */
-		//portYIELD_FROM_ISR( xHigherPriorityTaskWoken );
-	}	
+		BaseType_t xHigherPriorityTaskWoken, xResult;
+
+		/* xHigherPriorityTaskWoken must be initialised to pdFALSE. */
+		xHigherPriorityTaskWoken = pdFALSE;
+
+		/* Set bit 0 and bit 4 in xEventGroup. */
+		xResult = xEventGroupSetBitsFromISR(
+									xDMAProcessEventGroup,   /* The event group being updated. */
+									DMA_EVT_GRP_BufferA, /* The bits being set. */
+									&xHigherPriorityTaskWoken );
+
+		/* Was the message posted successfully? */
+		if( xResult != pdFAIL )
+		{
+			/* If xHigherPriorityTaskWoken is now set to pdTRUE then a context
+			switch should be requested.  The macro used is port specific and will
+			be either portYIELD_FROM_ISR() or portEND_SWITCHING_ISR() - refer to
+			the documentation page for the port being used. */
+			//portYIELD_FROM_ISR( xHigherPriorityTaskWoken );
+		}	
+	}
 }
 
 ISR(DMA_CH1_vect)
 {
 	//Interrupt quittieren
 	DMA.CH1.CTRLB |= 0x10;
-	TCC1.INTFLAGS |= 0x01;
 
-		
-	BaseType_t xHigherPriorityTaskWoken, xResult;
-
-	/* xHigherPriorityTaskWoken must be initialised to pdFALSE. */
-	xHigherPriorityTaskWoken = pdFALSE;
-
-	/* Set bit 0 and bit 4 in xEventGroup. */
-	xResult = xEventGroupSetBitsFromISR(
-								xDMAProcessEventGroup,   /* The event group being updated. */
-								DMA_EVT_GRP_BufferB, /* The bits being set. */
-								&xHigherPriorityTaskWoken );
-
-	/* Was the message posted successfully? */
-	if( xResult != pdFAIL )
+	//Erst nach einem weiteren Timer Tick wird der DMA weitergeführt. 
+	//Wir haben also Zeit, hier den DMA umzukonfigurieren.
+	vSetDMA_LUT_Offset();
+	
+	//Wenn wir nicht am Ararbeiten von Symbolen sind! Dann gehen wir in den Task
+	if(qamBlockTransfer == 0)
 	{
-		/* If xHigherPriorityTaskWoken is now set to pdTRUE then a context
-		switch should be requested.  The macro used is port specific and will
-		be either portYIELD_FROM_ISR() or portEND_SWITCHING_ISR() - refer to
-		the documentation page for the port being used. */
-		//portYIELD_FROM_ISR( xHigherPriorityTaskWoken );
-	}	
+		BaseType_t xHigherPriorityTaskWoken, xResult;
+
+		/* xHigherPriorityTaskWoken must be initialised to pdFALSE. */
+		xHigherPriorityTaskWoken = pdFALSE;
+
+		/* Set bit 0 and bit 4 in xEventGroup. */
+		xResult = xEventGroupSetBitsFromISR(
+									xDMAProcessEventGroup,   /* The event group being updated. */
+									DMA_EVT_GRP_BufferB, /* The bits being set. */
+									&xHigherPriorityTaskWoken );
+
+		/* Was the message posted successfully? */
+		if( xResult != pdFAIL )
+		{
+			/* If xHigherPriorityTaskWoken is now set to pdTRUE then a context
+			switch should be requested.  The macro used is port specific and will
+			be either portYIELD_FROM_ISR() or portEND_SWITCHING_ISR() - refer to
+			the documentation page for the port being used. */
+			//portYIELD_FROM_ISR( xHigherPriorityTaskWoken );
+		}	
+	}
 }
