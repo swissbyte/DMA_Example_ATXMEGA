@@ -51,6 +51,8 @@ int main(void)
 	xTaskCreate( vLedBlink, (const char *) "ledBlink", configMINIMAL_STACK_SIZE+10, NULL, 1, &ledTask);
 	xTaskCreate( vTask_DMAHandler, (const char *) "dmaHandler", configMINIMAL_STACK_SIZE + 100, NULL, 1, &TaskDMAHandler);
 	
+	vInitDAC();
+	vInitDMATimer();
 	vInitDMA();
 	
 

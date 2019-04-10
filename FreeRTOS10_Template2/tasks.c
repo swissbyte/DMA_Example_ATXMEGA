@@ -36,17 +36,20 @@ void vTask_DMAHandler(void *pvParameters)
 	PORTF.DIRSET = PIN1_bm; /*LED1*/
 	PORTF.DIRSET = PIN2_bm; /*LED2*/
 	
+	
+	qamSendByte(0xE4);
+	vSetDMA_LUT_Offset();
 	while(1)
 	{
 		uxBits = xEventGroupWaitBits(
 		xDMAProcessEventGroup,   /* The event group being tested. */
-		DMA_EVT_GRP_BufferA | DMA_EVT_GRP_BufferB, /* The bits within the event group to wait for. */
+		DMA_EVT_GRP_QAM_FINISHED, /* The bits within the event group to wait for. */
 		pdTRUE,        /* Bits should be cleared before returning. */
 		pdFALSE,       /* Don't wait for both bits, either bit will do. */
 		portMAX_DELAY );/* Wait a maximum for either bit to be set. */
 			
 		//Check Event bits
-		if(uxBits & DMA_EVT_GRP_BufferA)
+		if(uxBits & DMA_EVT_GRP_QAM_FINISHED)
 		{
 			//Do stuff with BufferA
 			//buffer_a ....
@@ -55,17 +58,8 @@ void vTask_DMAHandler(void *pvParameters)
 			PORTF.OUT = (PORTF.OUT & (0xFF - 0x02));
 			PORTF.OUT |= 0x04;
 			
-			qamSendByte(0x00);
-		}
-		else //When it was not DMA_EVT_GRP_BufferA, then it was probably B. Since we only use two bits!
-		{
-			//Do stuff with BufferB
-			//buffer_b ....
-			
-			//Debug Output
-			
-			PORTF.OUT = (PORTF.OUT & (0xFF - 0x04));
-			PORTF.OUT |= 0x02;
+			qamSendByte(0xCC);
+			vStartQAMTransfer();			
 		}
 
 	}

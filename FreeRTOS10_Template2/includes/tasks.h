@@ -16,8 +16,7 @@
 
 void vTask_DMAHandler(void *pvParameters);
 
-#define DMA_EVT_GRP_BufferA  ( 1 << 0 )
-#define DMA_EVT_GRP_BufferB  ( 1 << 1 )
+#define DMA_EVT_GRP_QAM_FINISHED  ( 1 << 0 )
 
 EventGroupHandle_t xDMAProcessEventGroup;
 
